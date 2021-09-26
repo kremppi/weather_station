@@ -1,0 +1,273 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include <SD.h>
+#include <TroykaGPS.h>
+#include <MQ135.h>
+#include <SoftwareSerial.h>
+SoftwareSerial GSMport(10, 11); // RX, TX
+Adafruit_BME280 bme;
+GPS gps(Serial2);
+
+unsigned int pm2_5 = 0; // Part.counter
+unsigned int pm10 = 0;
+unsigned long delayTime; // Time delay GSM
+int char_;
+
+
+#define analogPin A0 //For MQ
+#define MAX_SIZE_MASS 16  // symbol limit
+char time[MAX_SIZE_MASS];
+char date[MAX_SIZE_MASS];
+//char latitudeBase60[MAX_SIZE_MASS];
+//char longitudeBase60[MAX_SIZE_MASS];
+String post_req; //POST request variable
+MQ135 CO = MQ135(analogPin);
+File LogFile;
+
+
+void setup() {
+  GSMport.begin(9600);
+  Serial.begin(9600);
+   Serial1.begin(9600);
+   Serial2.begin(9600);
+   bme.begin();
+   SD.begin(53);
+   delay(100);
+   GPSR();
+   delay(100);
+   gprs_init();
+   delay(500);
+   }
+
+
+void loop() {
+pmread(); 
+delay(500);
+LogToSD();
+delay(5000);
+gprs_send();
+  Serial.print("{\"data\":[[\"PM10\",\"");
+  Serial.print(pm10);
+  Serial.print("\"],[\"PM2_5\",\"");
+  Serial.print(pm2_5);
+  Serial.print("\"],[\"Hum\",\"");
+  Serial.print(int(bme.readHumidity()));
+  Serial.print("\"],[\"Temp\",\"");
+  Serial.print(int(bme.readTemperature()));
+  Serial.print("\"],[\"Speed\",\"");
+  Serial.print(int(gps.getSpeedKm()));
+  Serial.print("\"],[\"Press\",\"");
+  Serial.print(int(bme.readPressure() / 133.3));
+  Serial.print("\"],[\"Lat\",\"");
+  Serial.print(gps.getLatitudeBase10(), 6);
+  Serial.print("\"],[\"Long\",\"");
+  Serial.print(gps.getLongitudeBase10(), 6);
+  Serial.print("\"],[\"post_reqest\",\"");
+  Serial.print(post_req);
+  Serial.println("\"]]}");
+  post_req = "Hum:" + String(int(bme.readHumidity())) + " Temp:" + String(int(bme.readTemperature())) + " Spd:" + String(int(gps.getSpeedKm())) + " Pres:" + String(int(bme.readPressure() / 133.3)) + " Lat:" + String(gps.getLatitudeBase10(), 6) + " Lng:" + String(gps.getLongitudeBase10(), 6) + " PM10:" + String(pm10) + " PM2_5:" + String(pm2_5); ;
+ // Serial.println(post_req);
+  
+  
+delay(5000);
+}
+
+void GPSR(){
+ if (gps.available()) {
+    // read and pace data
+    gps.readParsing();
+    // check GPS state
+    switch(gps.getState()) {
+      // is OK
+      case GPS_OK:
+        //Serial.println("GPS is OK");
+        gps.getLatitudeBase60(latitudeBase60, MAX_SIZE_MASS);
+        gps.getLongitudeBase60(longitudeBase60, MAX_SIZE_MASS);
+      //  Serial.println(gps.getLatitudeBase10(), 6);
+      //  Serial.println(gps.getLongitudeBase10(), 6);
+     //   Serial.println(gps.getSpeedKm());
+        // print current time
+       // Serial.print("Time: ");
+        gps.getTime(time, MAX_SIZE_MASS);
+        gps.getDate(date, MAX_SIZE_MASS);
+      //  Serial.write(time);
+      //  Serial.println();
+        // print date
+      //  Serial.print("Date: ");
+        //Serial.write(date);
+      //  Serial.println("\r\n");
+        break;
+      // if wrong
+      case GPS_ERROR_DATA:
+        Serial.println("GPS error data");
+        break;
+      // if no sattellite connection
+      case GPS_ERROR_SAT:
+        Serial.println("GPS no connect to satellites!!!");
+        break;
+    }
+  }
+  
+}
+
+void pmread(){
+  int index = 0;
+ char value;
+  char previousValue;
+  while (Serial1.available()) {
+    value = Serial1.read();
+    if ((index == 0 && value != 0x42) || (index == 1 && value != 0x4d)){
+      Serial.println("Cannot find the data header.");
+      Serial.println("");
+      break;
+    }
+
+    if (index == 4 || index == 6 || index == 8 || index == 10 || index == 12 || index == 14) {
+      previousValue = value;
+    }
+    else if (index == 7) {
+      pm2_5 = 256 * previousValue + value;
+    //  Serial.print("pm2_5 = ");
+    //  Serial.print(pm2_5);
+    //  Serial.print(" ug/m3");
+    //  Serial.println("");
+    }
+    else if (index == 9) {
+      pm10 = 256 * previousValue + value;
+  //   Serial.print("pm10 = ");
+    //  Serial.print(pm10);
+    //  Serial.println(" ug/m3");
+    //  Serial.println(" ");
+    } else if (index > 15) {
+      break;
+    }
+    index++;
+  }
+ 
+   while(Serial1.available()) Serial1.read();
+}
+
+void LogToSD() {
+LogFile = SD.open ("LOG.txt", FILE_WRITE);
+
+ if (LogFile) {
+  LogFile.println("");
+  LogFile.print("[");
+  LogFile.print(gps.getLatitudeBase10(), 6);
+  LogFile.print("N;");
+  LogFile.print(gps.getLongitudeBase10(), 6);
+  LogFile.print("E");
+  LogFile.println("]");
+   LogFile.print("Satellite date = ");
+  LogFile.println(date);
+  LogFile.print("Satellite time = ");
+  LogFile.println(time);
+  LogFile.print("Current vehicle speed = ");
+  LogFile.print(gps.getSpeedKm());
+  LogFile.println(" km/h");
+  LogFile.print("Temperature = ");
+  LogFile.print(bme.readTemperature());
+  LogFile.println(" *C");
+  LogFile.print("Pressure = ");
+  LogFile.print(bme.readPressure() / 133.3);
+  LogFile.println(" mmHg");
+  LogFile.print("Humidity = ");
+  LogFile.print(bme.readHumidity());
+  LogFile.println(" %");
+  LogFile.print("pm 2.5 = ");
+  LogFile.print(13);
+  LogFile.println(" ug/m3");
+  LogFile.print("pm 10 = ");
+  LogFile.print(12);
+  LogFile.println(" ug/m3");
+  LogFile.print("CO level = ");
+  LogFile.print(CO.getPPM()/15.75);
+  LogFile.println(" ppm");
+  LogFile.print("SO2 level = ");
+  LogFile.println(" ppm");
+  LogFile.print("NO2 level = ");
+  LogFile.println(" ppm");  
+  LogFile.print("H2S level = ");
+  LogFile.println(" ppm"); 
+ } else {
+  Serial.println("Error opening LogFile.txt");
+ }
+ LogFile.close();
+  
+}
+
+
+void gprs_init() {  //GPS module initialisation procedure
+  int d = 500;
+  int ATsCount = 7;
+  String ATs[] = {  //AT commands array
+    "AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"",  //Connection options
+    "AT+SAPBR=3,1,\"APN\",\"internet.beeline.ru\"",
+    "AT+SAPBR=3,1,\"USER\",\"beeline\"",
+    "AT+SAPBR=3,1,\"PWD\",\"beeline\"",
+    "AT+SAPBR=1,1",  //GPRS connection initialisation
+    "AT+HTTPINIT",  //http initialisation
+    "AT+HTTPPARA=\"CID\",1"  //Setting CID parameters for http session
+  };
+  int ATsDelays[] = {6, 1, 1, 1, 3, 3, 1}; //dellay array
+  //Serial.println("GPRS init start");
+  for (int i = 0; i < ATsCount; i++) {
+    GSMport.println(ATs[i]);  //sending to GPS mdule
+    delay(d * ATsDelays[i]);
+  // Serial.println(ReadGSM());  //answer from GPS module
+    delay(d);
+  }
+ // Serial.println("GPRS init complete");
+}
+
+void gprs_send() {  //data sending procedure
+  //sending data to the server
+  int d = 500;
+Serial.println("setup url");
+  GSMport.println("AT+HTTPPARA=\"URL\",\"http://cloud.wiregeo.com/api/v1/multi?method=post&token="");
+  delay(d* 3);
+   GSMport.println("AT+HTTPACTION=1");
+  delay(d* 3);
+GSMport.println("AT+HTTPDATA=230,10000");
+  delay(d * 2);
+  GSMport.print("{\"data\":[[\"PM10\",\"");
+  GSMport.print(pm10);
+  GSMport.print("\"],[\"PM2_5\",\"");
+  GSMport.print(pm2_5);
+  GSMport.print("\"],[\"Hum\",\"");
+  GSMport.print(int(bme.readHumidity()));
+  GSMport.print("\"],[\"Temp\",\"");
+  GSMport.print(int(bme.readTemperature()));
+  GSMport.print("\"],[\"Speed\",\"");
+  GSMport.print(int(gps.getSpeedKm()));
+  GSMport.print("\"],[\"Press\",\"");
+  GSMport.print(int(bme.readPressure() / 133.3));
+  GSMport.print("\"],[\"Lat\",\"");
+  GSMport.print(gps.getLatitudeBase10(), 6);
+  GSMport.print("\"],[\"Long\",\"");
+  GSMport.print(gps.getLongitudeBase10(), 6);
+  GSMport.print("\"],[\"post_reqest\",\"");
+  GSMport.print(post_req);
+  GSMport.print("\"]]}");
+  delay(d * 2);
+Serial.println(ReadGSM());
+  delay(d * 2);
+  GSMport.println("AT+HTTPACTION=1");
+  delay(d * 2);
+Serial.println(ReadGSM());
+ delay(d*2);
+
+  }
+
+String ReadGSM() {  //Reading data from GSM
+  int c;
+  String v;
+  while (GSMport.available()) {  //saving answer into v
+    c = GSMport.read();
+    v += char(c);
+    delay(10);
+  }
+  return v;
+}
